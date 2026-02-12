@@ -1,119 +1,217 @@
-#!/bin/bash
-# ============================================
-# 🚀 Auto Installer: Windows 11 on Docker + Cloudflare Tunnel
-# ============================================
+name: RDP
 
-set -e
 
-echo "=== 🔧 Menjalankan sebagai root ==="
-if [ "$EUID" -ne 0 ]; then
-  echo "Script ini butuh akses root. Jalankan dengan: sudo bash install-windows11-cloudflare.sh"
-  exit 1
-fi
+on:
 
-echo
-echo "=== 📦 Update & Install Docker Compose ==="
-apt update -y
-apt install docker-compose -y
+  workflow_dispatch:
 
-systemctl enable docker
-systemctl start docker
 
-echo
-echo "=== 📂 Membuat direktori kerja dockercom ==="
-mkdir -p /root/dockercom
-cd /root/dockercom
+jobs:
 
-echo
-echo "=== 🧾 Membuat file windows.yml ==="
-cat > windows.yml <<'EOF'
-version: "3.9"
-services:
-  windows:
-    image: dockurr/windows
-    container_name: windows
-    environment:
-      VERSION: "11"
-      USERNAME: "MASTER"
-      PASSWORD: "admin@123"
-      RAM_SIZE: "7G"
-      CPU_CORES: "4"
-    devices:
-      - /dev/kvm
-      - /dev/net/tun
-    cap_add:
-      - NET_ADMIN
-    ports:
-      - "8006:8006"
-      - "3389:3389/tcp"
-      - "3389:3389/udp"
-    volumes:
-      - /tmp/windows-storage:/storage
-    restart: always
-    stop_grace_period: 2m
+  secure-rdp:
 
-EOF
+    runs-on: windows-latest
 
-echo
-echo "=== ✅ File windows.yml berhasil dibuat ==="
-cat windows.yml
+    timeout-minutes: 3600
 
-echo
-echo "=== 🚀 Menjalankan Windows 11 container ==="
-docker-compose -f windows.yml up -d
 
-echo
-echo "=== ☁️ Instalasi Cloudflare Tunnel ==="
-if [ ! -f "/usr/local/bin/cloudflared" ]; then
-  wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
-  chmod +x /usr/local/bin/cloudflared
-fi
+    steps:
 
-echo
-echo "=== 🌍 Membuat tunnel publik untuk akses web & RDP ==="
-nohup cloudflared tunnel --url http://localhost:8006 > /var/log/cloudflared_web.log 2>&1 &
-nohup cloudflared tunnel --url tcp://localhost:3389 > /var/log/cloudflared_rdp.log 2>&1 &
-sleep 6
+      - name: Configure Core RDP Settings
 
-CF_WEB=$(grep -o "https://[a-zA-Z0-9.-]*\.trycloudflare\.com" /var/log/cloudflared_web.log | head -n 1)
-CF_RDP=$(grep -o "tcp://[a-zA-Z0-9.-]*\.trycloudflare\.com:[0-9]*" /var/log/cloudflared_rdp.log | head -n 1)
+        run: |
 
-echo
-echo "=============================================="
-echo "🎉 Instalasi Selesai!"
-echo
-if [ -n "$CF_WEB" ]; then
-  echo "🌍 Web Console (NoVNC / UI):"
-  echo "    ${CF_WEB}"
-else
-  echo "⚠️ Tidak menemukan link web Cloudflare (port 8006)"
-  echo "    Cek log: tail -f /var/log/cloudflared_web.log"
-fi
+          # Enable Remote Desktop and disable Network Level Authentication (if needed)
 
-if [ -n "$CF_RDP" ]; then
-  echo
-  echo "🖥️  Remote Desktop (RDP) melalui Cloudflare:"
-  echo "    ${CF_RDP}"
-else
-  echo "⚠️ Tidak menemukan link RDP Cloudflare (port 3389)"
-  echo "    Cek log: tail -f /var/log/cloudflared_rdp.log"
-fi
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
 
-echo
-echo "🔑 Username: MASTER"
-echo "🔒 Password: admin@123"
-echo
-echo "Untuk melihat status container:"
-echo "  docker ps"
-echo
-echo "Untuk menghentikan VM:"
-echo "  docker stop windows"
-echo
-echo "Untuk melihat log Windows:"
-echo "  docker logs -f windows"
-echo
-echo "Untuk melihat link Cloudflare:"
-echo "  grep 'trycloudflare' /var/log/cloudflared_*.log"
-echo
-echo "=== ✅ Windows 11 di Docker siap digunakan! ==="
-echo "=============================================="
+                             -Name "fDenyTSConnections" -Value 0 -Force
+
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+
+                             -Name "UserAuthentication" -Value 0 -Force
+
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+
+                             -Name "SecurityLayer" -Value 0 -Force
+
+
+          # Remove any existing rule with the same name to avoid duplication
+
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+
+         
+
+          # For testing, allow any incoming connection on port 3389
+
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+
+            dir=in action=allow protocol=TCP localport=3389
+
+
+          # (Optional) Restart the Remote Desktop service to ensure changes take effect
+
+          Restart-Service -Name TermService -Force
+
+
+      - name: Create RDP User with Secure Password
+
+        run: |
+
+          Add-Type -AssemblyName System.Security
+
+          $charSet = @{
+
+              Upper   = [char[]](65..90)      # A-Z
+
+              Lower   = [char[]](97..122)     # a-z
+
+              Number  = [char[]](48..57)      # 0-9
+
+              Special = ([char[]](33..47) + [char[]](58..64) +
+
+                         [char[]](91..96) + [char[]](123..126)) # Special characters
+
+          }
+
+          $rawPassword = @()
+
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+
+         
+
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+
+         
+
+          if (-not (Get-LocalUser -Name "RDP")) {
+
+              Write-Error "User creation failed"
+
+              exit 1
+
+          }
+
+
+      - name: Install Tailscale
+
+        run: |
+
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+
+          $installerPath = "$env:TEMP\tailscale.msi"
+
+         
+
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+
+          Remove-Item $installerPath -Force
+
+
+      - name: Establish Tailscale Connection
+
+        run: |
+
+          # Bring up Tailscale with the provided auth key and set a unique hostname
+
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+
+         
+
+          # Wait for Tailscale to assign an IP
+
+          $tsIP = $null
+
+          $retries = 0
+
+          while (-not $tsIP -and $retries -lt 10) {
+
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+
+              Start-Sleep -Seconds 5
+
+              $retries++
+
+          }
+
+         
+
+          if (-not $tsIP) {
+
+              Write-Error "Tailscale IP not assigned. Exiting."
+
+              exit 1
+
+          }
+
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+     
+
+      - name: Verify RDP Accessibility
+
+        run: |
+
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+
+         
+
+          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
+
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+
+          if (-not $testResult.TcpTestSucceeded) {
+
+              Write-Error "TCP connection to RDP port 3389 failed"
+
+              exit 1
+
+          }
+
+          Write-Host "TCP connectivity successful!"
+
+
+      - name: Maintain Connection
+
+        run: |
+
+          Write-Host "`n=== RDP ACCESS ==="
+
+          Write-Host "Address: $env:TAILSCALE_IP"
+
+          Write-Host "Username: RDP"
+
+          Write-Host "Password: $(echo $env:RDP_CREDS)"
+
+          Write-Host "==================`n"
+
+         
+
+          # Keep runner active indefinitely (or until manually cancelled)
+
+          while ($true) {
+
+              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+
+              Start-Sleep -Seconds 300
+
+          }
+
